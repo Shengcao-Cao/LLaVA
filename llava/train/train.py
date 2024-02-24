@@ -64,6 +64,11 @@ class ModelArguments:
     mm_use_im_patch_token: bool = field(default=True)
     mm_patch_merge_type: Optional[str] = field(default='flat')
     mm_vision_select_feature: Optional[str] = field(default="patch")
+    mm_vision_resize: int = field(default=336)
+    mm_vision_crop: int = field(default=336)
+    mm_vision_timestep: int = field(default=261)
+    mm_vision_ensemble_size: int = field(default=8)
+    mm_vision_ms: bool = field(default=False)
 
 
 @dataclass
@@ -942,6 +947,12 @@ def train(attn_implementation=None):
         training_args.use_im_start_end = model_args.mm_use_im_start_end
         model.config.mm_use_im_patch_token = model_args.mm_use_im_patch_token
         model.initialize_vision_tokenizer(model_args, tokenizer=tokenizer)
+
+        model.config.mm_vision_resize = model_args.mm_vision_resize
+        model.config.mm_vision_crop = model_args.mm_vision_crop
+        model.config.mm_vision_timestep = model_args.mm_vision_timestep
+        model.config.mm_vision_ensemble_size = model_args.mm_vision_ensemble_size
+        model.config.mm_vision_ms = model_args.mm_vision_ms
 
     if training_args.bits in [4, 8]:
         from peft.tuners.lora import LoraLayer

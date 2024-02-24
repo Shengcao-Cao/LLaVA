@@ -95,7 +95,8 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                 model = LlavaMptForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
             else:
                 tokenizer = AutoTokenizer.from_pretrained(model_base, use_fast=False)
-                cfg_pretrained = AutoConfig.from_pretrained(model_path)
+                from llava.model.language_model.llava_llama import LlavaConfig
+                cfg_pretrained = LlavaConfig.from_pretrained(model_path)
                 model = LlavaLlamaForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, config=cfg_pretrained, **kwargs)
 
             mm_projector_weights = torch.load(os.path.join(model_path, 'mm_projector.bin'), map_location='cpu')
@@ -157,6 +158,8 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
             vision_tower.load_model(device_map=device_map)
         if device_map != 'auto':
             vision_tower.to(device=device_map, dtype=torch.float16)
+        else:
+            vision_tower.to(dtype=torch.float16)
         image_processor = vision_tower.image_processor
 
     if hasattr(model.config, "max_sequence_length"):
