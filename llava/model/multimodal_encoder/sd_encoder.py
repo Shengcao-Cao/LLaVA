@@ -7,6 +7,7 @@ from torchvision import transforms
 
 from diffusers import StableDiffusionPipeline, DDIMScheduler
 from diffusers.models.unet_2d_condition import UNet2DConditionModel
+from transformers import CLIPImageProcessor
 
 class MyUNet2DConditionModel(UNet2DConditionModel):
     def forward(
@@ -245,44 +246,6 @@ class SDFeaturizer:
         return unet_ft
 
 
-class SDImageProcessor(nn.Module):
-    def __init__(self, resize=None, crop=None):
-        super().__init__()
-
-        if resize is not None:
-            self.resize = transforms.Resize(resize)
-        else:
-            self.resize = None
-        if crop is not None:
-            self.crop = transforms.CenterCrop(crop)
-        else:
-            self.crop = None
-        self.to_tensor = transforms.PILToTensor()
-        self.image_mean = [0.5, 0.5, 0.5]
-        self.crop_size = {'height': crop, 'width': crop}
-
-    def preprocess(self, image, return_tensors='pt'):
-        if self.resize is not None:
-            image = self.resize(image)
-        if self.crop is not None:
-            image = self.crop(image)
-        image = (self.to_tensor(image) / 255.0 - 0.5) * 2.0
-        ret = {
-            'pixel_values': [image],
-        }
-        return ret
-
-    def forward(self, image, return_tensors='pt'):
-        if isinstance(image, list):
-            image = [self.preprocess(img, return_tensors) for img in image]
-            ret = {
-                'pixel_values': [img['pixel_values'][0] for img in image],
-            }
-            return ret
-        else:
-            return self.preprocess(image, return_tensors)
-
-
 class SDVisionTower(nn.Module):
     def __init__(self, vision_tower, args, delay_load=False):
         super().__init__()
@@ -306,7 +269,8 @@ class SDVisionTower(nn.Module):
             print('{} is already loaded, `load_model` called again, skipping.'.format(self.vision_tower_name))
             return
 
-        self.image_processor = SDImageProcessor(self.args.mm_vision_resize, self.args.mm_vision_crop)
+        self.image_processor = CLIPImageProcessor(size=self.args.mm_vision_resize, crop_size=self.args.mm_vision_crop,
+                                                  mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         self.vision_tower = SDFeaturizer(self.vision_tower_name)
         self.vision_tower.pipe.vae.requires_grad_(False)
         self.vision_tower.pipe.vae.eval()
@@ -317,7 +281,6 @@ class SDVisionTower(nn.Module):
         self.is_loaded = True
 
     def to(self, device=None, dtype=None, *args, **kwargs):
-        self.image_processor.to(device=device, dtype=dtype)
         self.vision_tower.pipe.to(torch_device=device, torch_dtype=dtype)
         self.vision_tower.null_prompt_embeds = self.vision_tower.null_prompt_embeds.to(device=device, dtype=dtype)
         return super().to(device=device, dtype=dtype, *args, **kwargs)
@@ -433,7 +396,8 @@ class SDMSVisionTower(nn.Module):
             print('{} is already loaded, `load_model` called again, skipping.'.format(self.vision_tower_name))
             return
 
-        self.image_processor = SDImageProcessor(self.args.mm_vision_resize, self.args.mm_vision_crop)
+        self.image_processor = CLIPImageProcessor(size=self.args.mm_vision_resize, crop_size=self.args.mm_vision_crop,
+                                                  mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         self.vision_tower = SDMSFeaturizer(self.vision_tower_name)
         self.vision_tower.pipe.vae.requires_grad_(False)
         self.vision_tower.pipe.vae.eval()
@@ -444,7 +408,6 @@ class SDMSVisionTower(nn.Module):
         self.is_loaded = True
 
     def to(self, device=None, dtype=None, *args, **kwargs):
-        self.image_processor.to(device=device, dtype=dtype)
         self.vision_tower.pipe.to(torch_device=device, torch_dtype=dtype)
         self.vision_tower.null_prompt_embeds = self.vision_tower.null_prompt_embeds.to(device=device, dtype=dtype)
         return super().to(device=device, dtype=dtype, *args, **kwargs)
