@@ -6,8 +6,8 @@ import torch.nn as nn
 from torchvision import transforms
 
 from diffusers import StableDiffusionPipeline, DDIMScheduler
-from diffusers.models.unet_2d_condition import UNet2DConditionModel
-from transformers import CLIPImageProcessor
+from diffusers.models import UNet2DConditionModel, AutoencoderKL
+from transformers import CLIPImageProcessor, CLIPTextModel
 
 class MyUNet2DConditionModel(UNet2DConditionModel):
     def forward(
@@ -188,7 +188,16 @@ class OneStepSDPipeline(StableDiffusionPipeline):
 class SDFeaturizer:
     def __init__(self, sd_id='stabilityai/stable-diffusion-2-1', null_prompt=''):
         unet = MyUNet2DConditionModel.from_pretrained(sd_id, subfolder="unet")
-        onestep_pipe = OneStepSDPipeline.from_pretrained(sd_id, unet=unet, safety_checker=None)
+        text_encoder = CLIPTextModel.from_pretrained(sd_id, subfolder="text_encoder")
+        vae = AutoencoderKL.from_pretrained(sd_id, subfolder="vae")
+        vae.requires_grad_(False)
+        vae.eval()
+        unet.requires_grad_(False)
+        unet.eval()
+        text_encoder.requires_grad_(False)
+        text_encoder.eval()
+        onestep_pipe = OneStepSDPipeline.from_pretrained(sd_id, unet=unet, text_encoder=text_encoder, vae=vae,
+                                                         safety_checker=None, low_cpu_mem_usage=False)
         onestep_pipe.vae.decoder = None
         onestep_pipe.scheduler = DDIMScheduler.from_pretrained(sd_id, subfolder="scheduler")
         gc.collect()
@@ -272,12 +281,6 @@ class SDVisionTower(nn.Module):
         self.image_processor = CLIPImageProcessor(size=self.args.mm_vision_resize, crop_size=self.args.mm_vision_crop,
                                                   mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         self.vision_tower = SDFeaturizer(self.vision_tower_name)
-        self.vision_tower.pipe.vae.requires_grad_(False)
-        self.vision_tower.pipe.vae.eval()
-        self.vision_tower.pipe.unet.requires_grad_(False)
-        self.vision_tower.pipe.unet.eval()
-        self.vision_tower.pipe.text_encoder.requires_grad_(False)
-        self.vision_tower.pipe.text_encoder.eval()
         self.is_loaded = True
 
     def to(self, device=None, dtype=None, *args, **kwargs):
