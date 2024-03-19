@@ -40,6 +40,11 @@ class LlavaMetaModel:
                     torch.empty(config.hidden_size, dtype=self.dtype)
                 )
 
+            if getattr(config, 'mm_vision_clip', None):
+                self.vision_tower.vision_tower.clip_projector = self.mm_projector.clip_projector
+            if getattr(config, 'mm_vision_pe', -1) > 0:
+                self.vision_tower.vision_tower.clip_pe = self.mm_projector.clip_pe
+
     def get_vision_tower(self):
         vision_tower = getattr(self, 'vision_tower', None)
         if type(vision_tower) is list:
@@ -75,6 +80,11 @@ class LlavaMetaModel:
         self.config.mm_vision_select_layer = mm_vision_select_layer
         self.config.mm_vision_select_feature = mm_vision_select_feature
         self.config.mm_patch_merge_type = mm_patch_merge_type
+        self.config.mm_vision_clip = getattr(model_args, 'mm_vision_clip', None)
+        self.config.mm_vision_clip_proj_in = getattr(model_args, 'mm_vision_clip_proj_in', None)
+        self.config.mm_vision_clip_proj_out = getattr(model_args, 'mm_vision_clip_proj_out', None)
+        self.config.mm_vision_append_clip = getattr(model_args, 'mm_vision_append_clip', None)
+        self.config.mm_vision_pe = getattr(model_args, 'mm_vision_pe', None)
 
         if getattr(self, 'mm_projector', None) is None:
             self.mm_projector = build_vision_projector(self.config)
@@ -84,6 +94,11 @@ class LlavaMetaModel:
                 self.image_newline = nn.Parameter(
                     torch.randn(self.config.hidden_size, dtype=self.dtype) * embed_std
                 )
+
+            if getattr(model_args, 'mm_vision_clip', None):
+                self.vision_tower.vision_tower.clip_projector = self.mm_projector.clip_projector
+            if getattr(model_args, 'mm_vision_pe', -1) > 0:
+                self.vision_tower.vision_tower.clip_pe = self.mm_projector.clip_pe
         else:
             # In case it is frozen by LoRA
             for p in self.mm_projector.parameters():

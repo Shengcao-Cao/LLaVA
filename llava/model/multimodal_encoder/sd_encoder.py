@@ -7,7 +7,7 @@ from torchvision import transforms
 
 from diffusers import StableDiffusionPipeline, DDIMScheduler
 from diffusers.models import UNet2DConditionModel, AutoencoderKL
-from transformers import CLIPImageProcessor, CLIPTextModel
+from transformers import CLIPImageProcessor, CLIPTextModel, CLIPVisionModel
 
 class MyUNet2DConditionModel(UNet2DConditionModel):
     def forward(
@@ -151,14 +151,13 @@ class MyUNet2DConditionModel(UNet2DConditionModel):
                 )
 
             if i in up_ft_indices:
-                up_ft[i] = sample.detach()
+                up_ft[i] = sample.clone()
 
         output = {}
         output['up_ft'] = up_ft
         return output
 
 class OneStepSDPipeline(StableDiffusionPipeline):
-    @torch.no_grad()
     def __call__(
         self,
         img_tensor,
@@ -402,12 +401,6 @@ class SDMSVisionTower(nn.Module):
         self.image_processor = CLIPImageProcessor(size=self.args.mm_vision_resize, crop_size=self.args.mm_vision_crop,
                                                   mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         self.vision_tower = SDMSFeaturizer(self.vision_tower_name)
-        self.vision_tower.pipe.vae.requires_grad_(False)
-        self.vision_tower.pipe.vae.eval()
-        self.vision_tower.pipe.unet.requires_grad_(False)
-        self.vision_tower.pipe.unet.eval()
-        self.vision_tower.pipe.text_encoder.requires_grad_(False)
-        self.vision_tower.pipe.text_encoder.eval()
         self.is_loaded = True
 
     def to(self, device=None, dtype=None, *args, **kwargs):
@@ -442,6 +435,184 @@ class SDMSVisionTower(nn.Module):
     def hidden_size(self):
         # hard-coded for SD v2.1
         hidden_size = [1280, 1280, 640, 320]
+        return hidden_size
+
+    @property
+    def num_patches_per_side(self):
+        # hard-coded for SD v2.1
+        patch_size = 16
+        return self.args.mm_vision_crop // patch_size
+
+    @property
+    def num_patches(self):
+        # hard-coded for SD v2.1
+        patch_size = 16
+        return (self.args.mm_vision_crop // patch_size) ** 2
+
+
+class SDCLIPFeaturizer:
+    def __init__(self, sd_id='stabilityai/stable-diffusion-2-1', null_prompt='',
+                 clip_model='openai/clip-vit-large-patch14-336',
+                 append_clip=False, pe=-1, device_map=None):
+        unet = MyUNet2DConditionModel.from_pretrained(sd_id, subfolder="unet")
+        text_encoder = CLIPTextModel.from_pretrained(sd_id, subfolder="text_encoder")
+        vae = AutoencoderKL.from_pretrained(sd_id, subfolder="vae")
+        clip_encoder = CLIPVisionModel.from_pretrained(clip_model, device_map=device_map)
+        vae.requires_grad_(False)
+        vae.eval()
+        unet.requires_grad_(False)
+        unet.eval()
+        text_encoder.requires_grad_(False)
+        text_encoder.eval()
+        clip_encoder.requires_grad_(False)
+        clip_encoder.eval()
+        self.clip_encoder = clip_encoder
+        onestep_pipe = OneStepSDPipeline.from_pretrained(sd_id, unet=unet, text_encoder=text_encoder, vae=vae,
+                                                         safety_checker=None, low_cpu_mem_usage=False)
+        onestep_pipe.vae.decoder = None
+        onestep_pipe.scheduler = DDIMScheduler.from_pretrained(sd_id, subfolder="scheduler")
+        gc.collect()
+        onestep_pipe = onestep_pipe.to("cuda")
+        onestep_pipe.enable_attention_slicing()
+        onestep_pipe.enable_xformers_memory_efficient_attention()
+        null_prompt_embeds = onestep_pipe._encode_prompt(
+            prompt=null_prompt,
+            device='cuda',
+            num_images_per_prompt=1,
+            do_classifier_free_guidance=False) # [1, 77, dim]
+
+        self.null_prompt_embeds = null_prompt_embeds
+        self.null_prompt = null_prompt
+        self.pipe = onestep_pipe
+        # self.clip_projector and self.clip_pe is created in mm_projector later
+        self.append_clip = append_clip
+        self.add_pe = (pe > 0)
+
+    def sd_to_clip_img(self, img_tensor):
+        # hard-coded
+        # step 1: resize to 14/16
+        H, W = img_tensor.shape[-2:]
+        H = H * 7 // 8
+        W = W * 7 // 8
+        img_tensor = nn.functional.interpolate(img_tensor, size=(H, W), mode='bilinear', align_corners=False)
+        # step 2: re-normalize
+        sd_mean = torch.tensor([0.5, 0.5, 0.5], device=img_tensor.device, dtype=img_tensor.dtype).view(1, 3, 1, 1)
+        sd_std = torch.tensor([0.5, 0.5, 0.5], device=img_tensor.device, dtype=img_tensor.dtype).view(1, 3, 1, 1)
+        clip_mean = torch.tensor([0.48145466, 0.4578275, 0.40821073], device=img_tensor.device, dtype=img_tensor.dtype).view(1, 3, 1, 1)
+        clip_std = torch.tensor([0.26862954, 0.26130258, 0.27577711], device=img_tensor.device, dtype=img_tensor.dtype).view(1, 3, 1, 1)
+        img_tensor = img_tensor * sd_std + sd_mean
+        img_tensor = (img_tensor - clip_mean) / clip_std
+        return img_tensor
+
+    def forward(self,
+                img_tensor,
+                prompt='',
+                t=261,
+                up_ft_indices=[0, 1, 2, 3],
+                ensemble_size=8):
+        '''
+        Args:
+            img_tensor: should be a single torch tensor in the shape of [1, C, H, W] or [C, H, W]
+            prompt: the prompt to use, a string
+            t: the time step to use, should be an int in the range of [0, 1000]
+            up_ft_index: which upsampling block of the U-Net to extract feature, you can choose [0, 1, 2, 3]
+            ensemble_size: the number of repeated images used in the batch to extract features
+        Return:
+            unet_ft: a torch tensor in the shape of [1, c, h, w]
+        '''
+        if len(img_tensor.shape) == 3:
+            img_tensor = img_tensor.unsqueeze(0)
+        # prepare CLIP image features
+        clip_img_tensor = self.sd_to_clip_img(img_tensor)
+        clip_features = self.clip_encoder(clip_img_tensor, output_hidden_states=True)
+        clip_features = clip_features.hidden_states[-2][:, 1:]
+        proj_clip_features = self.clip_projector(clip_features)                 # bs, h * w, c
+        proj_clip_features = proj_clip_features.repeat(ensemble_size, 1, 1)     # ensem * bs, h * w, c
+        if self.add_pe:
+            proj_clip_features = proj_clip_features + self.clip_pe
+        # produce SD features
+        bs = img_tensor.shape[0]
+        img_tensor = img_tensor.repeat(ensemble_size, 1, 1, 1).cuda()           # ensem * bs, c, h, w
+        unet_ft_all = self.pipe(
+            img_tensor=img_tensor,
+            t=t,
+            up_ft_indices=up_ft_indices,
+            prompt_embeds=proj_clip_features)
+        unet_ft = {}
+        for up_ft_index in up_ft_indices:
+            unet_ft[up_ft_index] = unet_ft_all['up_ft'][up_ft_index]    # ensem * bs, c, h, w
+            unet_ft[up_ft_index] = unet_ft[up_ft_index].view(ensemble_size, bs, *unet_ft[up_ft_index].shape[1:])   # ensem, bs, c, h, w
+            unet_ft[up_ft_index] = unet_ft[up_ft_index].mean(0, keepdim=False)    # bs, c, h, w
+        unet_ft = [unet_ft[i] for i in up_ft_indices]
+        if self.append_clip:
+            bs, c, h, w = unet_ft[1].shape
+            clip_features = clip_features.view(bs, h, w, -1)
+            clip_features = clip_features.permute(0, 3, 1, 2)       # bs, c, h, w
+            unet_ft.append(clip_features)
+        return unet_ft
+
+
+class SDMSCLIPVisionTower(nn.Module):
+    def __init__(self, vision_tower, args, delay_load=False):
+        super().__init__()
+
+        self.is_loaded = False
+
+        self.vision_tower_name = vision_tower
+        self.t = args.mm_vision_timestep
+        self.ensemble_size = args.mm_vision_ensemble_size
+
+        if not delay_load or getattr(args, 'unfreeze_mm_vision_tower', False):
+            self.args = args
+            self.load_model()
+        else:
+            self.args = args
+
+    def load_model(self, device_map=None):
+        if self.is_loaded:
+            print('{} is already loaded, `load_model` called again, skipping.'.format(self.vision_tower_name))
+            return
+
+        self.image_processor = CLIPImageProcessor(size=self.args.mm_vision_resize, crop_size=self.args.mm_vision_crop,
+                                                  mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+        self.vision_tower = SDCLIPFeaturizer(self.vision_tower_name, clip_model=self.args.mm_vision_clip,
+                                             append_clip=self.args.mm_vision_append_clip,
+                                             pe=self.args.mm_vision_pe)
+        self.is_loaded = True
+
+    def to(self, device=None, dtype=None, *args, **kwargs):
+        self.vision_tower.pipe.to(torch_device=device, torch_dtype=dtype)
+        self.vision_tower.null_prompt_embeds = self.vision_tower.null_prompt_embeds.to(device=device, dtype=dtype)
+        self.vision_tower.clip_encoder.to(device=device, dtype=dtype)
+        return super().to(device=device, dtype=dtype, *args, **kwargs)
+
+    def forward(self, images):
+        image_features = self.vision_tower.forward(images,
+            prompt='', t=self.t, up_ft_indices=[0, 1, 2, 3], ensemble_size=self.ensemble_size)
+        return image_features
+
+    @property
+    def dummy_feature(self):
+        return torch.zeros(1, self.hidden_size[1], device=self.device, dtype=self.dtype)
+
+    @property
+    def dtype(self):
+        return self.vision_tower.pipe.unet.dtype
+
+    @property
+    def device(self):
+        return self.vision_tower.pipe.unet.device
+
+    @property
+    def config(self):
+        return self.args
+
+    @property
+    def hidden_size(self):
+        # hard-coded for SD v2.1
+        hidden_size = [1280, 1280, 640, 320]
+        if self.args.mm_vision_append_clip:
+            hidden_size.append(1024)
         return hidden_size
 
     @property

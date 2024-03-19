@@ -69,6 +69,11 @@ class ModelArguments:
     mm_vision_timestep: int = field(default=261)
     mm_vision_ensemble_size: int = field(default=8)
     mm_vision_ms: bool = field(default=False)
+    mm_vision_clip: Optional[str] = field(default=None)
+    mm_vision_clip_proj_in: int = field(default=1024)
+    mm_vision_clip_proj_out: int = field(default=768)
+    mm_vision_append_clip: bool = field(default=False)
+    mm_vision_pe: int = field(default=-1)
 
 
 @dataclass
@@ -953,6 +958,11 @@ def train(attn_implementation=None):
         model.config.mm_vision_timestep = model_args.mm_vision_timestep
         model.config.mm_vision_ensemble_size = model_args.mm_vision_ensemble_size
         model.config.mm_vision_ms = model_args.mm_vision_ms
+        model.config.mm_vision_clip = model_args.mm_vision_clip
+        model.config.mm_vision_clip_proj_in = model_args.mm_vision_clip_proj_in
+        model.config.mm_vision_clip_proj_out = model_args.mm_vision_clip_proj_out
+        model.config.mm_vision_append_clip = model_args.mm_vision_append_clip
+        model.config.mm_vision_pe = model_args.mm_vision_pe
 
     if training_args.bits in [4, 8]:
         from peft.tuners.lora import LoraLayer
