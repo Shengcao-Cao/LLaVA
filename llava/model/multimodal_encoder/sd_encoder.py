@@ -466,7 +466,7 @@ class SDCLIPFeaturizer:
         text_encoder.eval()
         clip_encoder.requires_grad_(False)
         clip_encoder.eval()
-        self.clip_encoder = clip_encoder
+        self.clip_encoder = clip_encoder.to("cuda")
         onestep_pipe = OneStepSDPipeline.from_pretrained(sd_id, unet=unet, text_encoder=text_encoder, vae=vae,
                                                          safety_checker=None, low_cpu_mem_usage=False)
         onestep_pipe.vae.decoder = None

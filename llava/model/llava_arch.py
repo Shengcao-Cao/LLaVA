@@ -40,11 +40,6 @@ class LlavaMetaModel:
                     torch.empty(config.hidden_size, dtype=self.dtype)
                 )
 
-            if getattr(config, 'mm_vision_clip', None):
-                self.vision_tower.vision_tower.clip_projector = self.mm_projector.clip_projector
-            if getattr(config, 'mm_vision_pe', -1) > 0:
-                self.vision_tower.vision_tower.clip_pe = self.mm_projector.clip_pe
-
     def get_vision_tower(self):
         vision_tower = getattr(self, 'vision_tower', None)
         if type(vision_tower) is list:

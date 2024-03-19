@@ -156,6 +156,10 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         vision_tower = model.get_vision_tower()
         if not vision_tower.is_loaded:
             vision_tower.load_model(device_map=device_map)
+            if getattr(model.config, 'mm_vision_clip', None):
+                vision_tower.vision_tower.clip_projector = model.get_model().mm_projector.clip_projector
+            if getattr(model.config, 'mm_vision_pe', -1) > 0:
+                vision_tower.vision_tower.clip_pe = model.get_model().mm_projector.clip_pe
         if device_map != 'auto':
             vision_tower.to(device=device_map, dtype=torch.float16)
         else:
