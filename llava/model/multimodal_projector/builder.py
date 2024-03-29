@@ -117,8 +117,6 @@ class SDMSLNBlock(nn.Module):
 class SDMSCLIPLNBlock(nn.Module):
     def __init__(self, in_channels, out_channels, scale=[32, 16, 8, 8], num_layers=4,
                  clip_proj_in=1024, clip_proj_out=768, append_clip=False, pe=-1):
-        # TODO: add option for appending clip features
-        # TODO: add option for positional encoding
         super().__init__()
         self.clip_projector = nn.Sequential(
             nn.Linear(clip_proj_in, clip_proj_out),
@@ -160,8 +158,6 @@ class SDMSCLIPLNBlock(nn.Module):
         self.linear = nn.Linear(out_channels // num_layers * num_layers, out_channels)
         if pe > 0:
             self.add_pe = True
-            # self.clip_pe = nn.Embedding(pe, clip_proj_out)
-            # self.vt_pe = nn.Embedding(pe, out_channels)
             self.clip_pe = nn.Parameter(torch.randn(pe, clip_proj_out))
             self.vt_pe = nn.Parameter(torch.randn(pe, out_channels))
         else:
@@ -221,6 +217,67 @@ class SDMSLNSSBlock(nn.Module):
         return y
 
 
+class SDMSCLIPLNSSBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, select_layer=1, scale=[32, 16, 8, 8], num_layers=4,
+                 clip_proj_in=1024, clip_proj_out=768, append_clip=False, pe=-1):
+        super().__init__()
+        self.clip_projector = nn.Sequential(
+            nn.Linear(clip_proj_in, clip_proj_out),
+            nn.GELU(),
+            nn.Linear(clip_proj_out, clip_proj_out),
+        )
+        self.append_clip = append_clip
+        if append_clip:
+            in_channels = in_channels + [clip_proj_in]
+            scale = scale + [16]
+        self.sd_norm_layer = nn.LayerNorm(in_channels[select_layer])
+        i = select_layer
+        # hard-coded for now, expecting output scale to be H/16 x W/16
+        if scale[i] == 32:
+            self.sd_proj_layer = nn.Sequential(
+                nn.ConvTranspose2d(in_channels[i], out_channels // 4, kernel_size=2, stride=2),
+                nn.GELU(),
+            )
+        elif scale[i] == 16:
+            self.sd_proj_layer = nn.Sequential(
+                nn.Conv2d(in_channels[i], out_channels // 4, kernel_size=1, stride=1),
+                nn.GELU(),
+            )
+        elif scale[i] == 8:
+            self.sd_proj_layer = nn.Sequential(
+                nn.Conv2d(in_channels[i], out_channels // 4, kernel_size=2, stride=2),
+                nn.GELU(),
+            )
+        else:
+            raise ValueError(f'Unknown scale: {scale[i]}')
+        self.linear = nn.Sequential(
+            nn.Linear(clip_proj_in + out_channels // 4, out_channels),
+            nn.GELU(),
+            nn.Linear(out_channels, out_channels),
+        )
+        self.select_layer = select_layer
+        if pe > 0:
+            self.add_pe = True
+            self.clip_pe = nn.Parameter(torch.randn(pe, clip_proj_out))
+            self.vt_pe = nn.Parameter(torch.randn(pe, out_channels))
+        else:
+            self.add_pe = False
+
+    def forward(self, x):
+        y = x[self.select_layer]
+        y = y.permute(0, 2, 3, 1)
+        y = self.sd_norm_layer(y)
+        y = y.permute(0, 3, 1, 2)
+        y = self.sd_proj_layer(y)
+        y = torch.cat([y, x[-1]], dim=1)
+        b, c, h, w = y.shape
+        y = y.view(b, c, h * w).permute(0, 2, 1)
+        y = self.linear(y)
+        if self.add_pe:
+            y = y + self.vt_pe
+        return y
+
+
 def build_vision_projector(config, delay_load=False, **kwargs):
     projector_type = getattr(config, 'mm_projector_type', 'linear')
 
@@ -243,6 +300,15 @@ def build_vision_projector(config, delay_load=False, **kwargs):
 
     if projector_type == 'SDMSLNSSBlock':
         return SDMSLNSSBlock(config.mm_hidden_size, config.hidden_size, config.mm_vision_select_layer, **kwargs)
+    
+    if projector_type == 'SDMSCLIPLNSSBlock':
+        return SDMSCLIPLNSSBlock(config.mm_hidden_size, config.hidden_size,
+                                 select_layer=config.mm_vision_select_layer,
+                                 clip_proj_in=config.mm_vision_clip_proj_in,
+                                 clip_proj_out=config.mm_vision_clip_proj_out,
+                                 append_clip=config.mm_vision_append_clip,
+                                 pe=config.mm_vision_pe,
+                                 **kwargs)
 
     mlp_gelu_match = re.match(r'^mlp(\d+)x_gelu$', projector_type)
     if mlp_gelu_match:
