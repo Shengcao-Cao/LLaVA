@@ -44,6 +44,11 @@ def eval_model(args):
 
     image_folder = os.path.expanduser(args.image_folder)
     image_files = sorted(os.listdir(image_folder))
+    if args.sample is not None:
+        image_ids = json.load(open(args.sample))
+        image_ids = set(image_ids)
+        image_files = [x for x in image_files if x[:-4] in image_ids]
+
     image_files = get_chunk(image_files, args.num_chunks, args.chunk_idx)
     image_paths = [os.path.join(image_folder, f) for f in image_files]
     os.makedirs(args.output_folder, exist_ok=True)
@@ -132,6 +137,7 @@ if __name__ == "__main__":
     parser.add_argument("--top_p", type=float, default=None)
     parser.add_argument("--num_beams", type=int, default=1)
     parser.add_argument("--max_new_tokens", type=int, default=1024)
+    parser.add_argument("--sample", type=str, default=None)
     args = parser.parse_args()
 
     eval_model(args)
