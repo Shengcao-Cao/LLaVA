@@ -122,6 +122,48 @@ def nms(masks, boxes, scores, iou=0.5):
     # return nms_masks, nms_boxes, scores[keep]
     return inv_indices[keep]
 
+def nms_phrase(masks, boxes, scores, phrases, spacy_model, iou=0.75, phrase_sim=0.75):
+    N = boxes.shape[0]
+
+    # sort by scores
+    indices = np.argsort(scores)[::-1]
+    inv_indices = np.argsort(indices)
+    masks = masks[indices]
+    boxes = boxes[indices]
+    scores = scores[indices]
+    phrases = [phrases[i] for i in indices]
+
+    keep = np.ones(N, dtype=bool)
+    nms_boxes = None
+    nms_masks = None
+    nms_phrases = []
+
+    for i in range(N):
+        box = boxes[i]
+        mask = masks[i]
+        phrase = phrases[i]
+        should_keep = True
+        if nms_boxes is not None:
+            mask_ious = compute_iou_masks(mask, nms_masks)
+            phrase_spacy = spacy_model(phrase)
+            sims = np.array([phrase_spacy.similarity(spacy_model(p)) for p in nms_phrases])
+            if np.any((mask_ious >= iou) & (sims >= phrase_sim)):
+                should_keep = False
+
+        keep[i] = should_keep
+        if should_keep:
+            if nms_boxes is None:
+                nms_boxes = np.array([box])
+                nms_masks = np.array([mask])
+                nms_phrases.append(phrase)
+            else:
+                nms_boxes = np.concatenate([nms_boxes, np.array([box])], axis=0)
+                nms_masks = np.concatenate([nms_masks, np.array([mask])], axis=0)
+                nms_phrases.append(phrase)
+
+    # return nms_masks, nms_boxes, scores[keep]
+    return inv_indices[keep]
+
 def parse_response(response, spacy_model):
     noun_phrases = list(spacy_model(response).noun_chunks)
     phrase_start_char = [p.start_char for p in noun_phrases]
