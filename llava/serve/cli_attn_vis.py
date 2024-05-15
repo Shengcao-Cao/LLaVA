@@ -2,6 +2,7 @@ import argparse
 import cv2
 import numpy as np
 import os
+import spacy
 import torch
 
 from llava.constants import IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
@@ -159,27 +160,10 @@ def main(args):
 
             attns = save_dict['attentions']
             attns = ((attns - attns.mean(axis=0)) / args.attn_temp).astype(np.float32)
-            tokens = tokenizer.convert_ids_to_tokens(save_dict['sequences'])
-
-            # visualize attention maps
-            plots_W = 5
-            plots_H = (len(tokens) + plots_W - 2) // plots_W
-            plt.figure(figsize=(plots_W * 2, plots_H * 2))
-            for i in range(len(tokens) - 1):
-                token = tokens[i + 1]
-                attn = attns[i]
-                plt.subplot(plots_H, plots_W, i + 1)
-                plt.imshow(attn, cmap='Reds', interpolation='nearest', vmin=0.0, vmax=1.0)
-                plt.axis('off')
-                plt.title(token)
-            plt.tight_layout()
-            plt.savefig(os.path.join(args.vis_path, file_name + "_attn.png"))
-            plt.close()
-
-            # visualize segmentation
-            plt.figure(figsize=(plots_W * 2, plots_H * 2))
-            for i in range(len(tokens) - 1):
-                token = tokens[i + 1]
+            tokens = tokenizer.convert_ids_to_tokens(save_dict['sequences'][1:])
+            masks = []
+            scores = []
+            for i in range(len(tokens)):
                 attn = attns[i]
                 attn = torch.tensor(attn).unsqueeze(0).unsqueeze(0)
                 attn = torch.nn.functional.interpolate(attn, (S, S), mode='bicubic', align_corners=False)
@@ -187,27 +171,112 @@ def main(args):
                 attn = attn.numpy()
                 attn_mask = convert_mask_SAM(attn)
                 attn_box = convert_box_SAM(attn, threshold=args.attn_box_thr)
-                flag = False
                 if attn_box is not None:
                     mask, score, logits = predictor.predict(box=attn_box, mask_input=attn_mask, multimask_output=False)
                     mask = mask.reshape(H, W).astype(np.uint8)
                     score = score.item()
-                    if mask.sum() > 0 and score > 0.5:
-                        flag = True
-                        vis_mask = image_np.copy()
-                        vis_mask[mask.astype(bool)] = (255, 0, 0)
-                        plt.subplot(plots_H, plots_W, i + 1)
-                        plt.imshow(vis_mask)
-                        plt.axis('off')
-                        plt.title(f'"{token}"{score:.2f}')
-                if not flag:
+                else:
+                    mask = np.zeros((H, W), dtype=np.uint8)
+                    score = 0.0
+                masks.append(mask)
+                scores.append(score)
+
+            if args.plot_token:
+                # visualize attention maps and segmentation
+                for i in range(len(tokens)):
+                    token = tokens[i]
+                    attn = attns[i]
+                    plt.figure(figsize=(4, 4))
+                    plt.imshow(attn, cmap='Reds', interpolation='nearest', vmin=0.0, vmax=1.0)
+                    plt.axis('off')
+                    # plt.title(f'"{token}"')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(args.vis_path, file_name + f"_attn_{i}.png"), bbox_inches='tight', transparent=True, pad_inches=0)
+                    plt.close()
+
+                    mask = masks[i]
+                    score = scores[i]
+                    vis_mask = image_np.copy()
+                    vis_mask[mask.astype(bool)] = (255, 0, 0)
+                    plt.figure(figsize=(8, 8))
+                    plt.imshow(vis_mask)
+                    plt.axis('off')
+                    # plt.title(f'"{token}" {score:.2f}')
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(args.vis_path, file_name + f"_seg_{i}.png"), bbox_inches='tight', transparent=True, pad_inches=0)
+                    plt.close()
+
+            if args.plot_token_compact:
+                # visualize attention maps
+                plots_W = 5
+                plots_H = (len(tokens) + plots_W - 2) // plots_W
+                plt.figure(figsize=(plots_W * 2, plots_H * 2))
+                for i in range(len(tokens)):
+                    token = tokens[i]
+                    attn = attns[i]
                     plt.subplot(plots_H, plots_W, i + 1)
-                    plt.imshow(image_np)
+                    plt.imshow(attn, cmap='Reds', interpolation='nearest', vmin=0.0, vmax=1.0)
                     plt.axis('off')
                     plt.title(f'"{token}"')
-            plt.tight_layout()
-            plt.savefig(os.path.join(args.vis_path, file_name + "_seg.png"))
-            plt.close()
+                plt.tight_layout()
+                plt.savefig(os.path.join(args.vis_path, file_name + "_attn.png"))
+                plt.close()
+
+                # visualize segmentation
+                plt.figure(figsize=(plots_W * 2, plots_H * 2))
+                for i in range(len(tokens)):
+                    token = tokens[i]
+                    attn = attns[i]
+                    mask = masks[i]
+                    score = scores[i]
+                    vis_mask = image_np.copy()
+                    vis_mask[mask.astype(bool)] = (255, 0, 0)
+                    plt.subplot(plots_H, plots_W, i + 1)
+                    plt.imshow(vis_mask)
+                    plt.axis('off')
+                    plt.title(f'"{token}" {score:.2f}')
+                plt.tight_layout()
+                plt.savefig(os.path.join(args.vis_path, file_name + "_seg.png"))
+                plt.close()
+
+            if args.plot_final:
+                spacy_model = spacy.load("en_core_web_md")
+                response, token_start_char, token_end_char = decode_token_seq(save_dict['sequences'][1:], tokenizer)
+                noun_phrases, phrase_start_char, phrase_end_char = parse_response(response, spacy_model)
+                phrase_token = associate_phrase_token(phrase_start_char, phrase_end_char, token_start_char, token_end_char)
+                phrase_token = [phrase_token[4], phrase_token[7], phrase_token[12]]
+                vis_mask = image_np.copy()
+                colors = []
+                for i in range(len(phrase_token)):
+                    best_tokens = phrase_token[i]
+                    best_mask = np.zeros((H, W), dtype=np.uint8)
+                    best_mask_score = 0.0
+                    best_token_idx = -1
+                    for token_idx in best_tokens:
+                        mask = masks[token_idx]
+                        score = scores[token_idx]
+                        if score > best_mask_score:
+                            best_mask = mask
+                            best_mask_score = score
+                            best_token_idx = token_idx
+
+                    hue = int(180 / len(phrase_token) * i)
+                    hsv_color = np.uint8([[[hue, 255, 255]]])
+                    color = cv2.cvtColor(hsv_color, cv2.COLOR_HSV2RGB)
+                    colors.append(color)
+
+                    kernel = np.ones((3, 3), np.uint8)
+                    boundary = cv2.dilate(best_mask.astype(np.uint8), kernel, iterations=1) - cv2.erode(best_mask.astype(np.uint8), kernel, iterations=1)
+                    best_mask = best_mask.astype(bool)
+                    boundary = boundary.astype(bool)
+                    vis_mask[best_mask] = (1 - args.alpha) * vis_mask[best_mask] + args.alpha * color
+                    vis_mask[boundary] = np.array([255, 255, 255])
+
+                vis_mask = cv2.cvtColor(vis_mask, cv2.COLOR_RGB2BGR)
+                cv2.imwrite(os.path.join(args.vis_path, file_name + "_final.jpg"), vis_mask)
+
+                for i in range(len(phrase_token)):
+                    print(f"Phrase {i}:", noun_phrases[i].text, colors[i])
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -230,5 +299,9 @@ if __name__ == "__main__":
     parser.add_argument('--sam-ckpt', type=str, default='save/sam_checkpoints/sam_vit_h_4b8939.pth')
     parser.add_argument('--attn-temp', type=float, default=0.0002)
     parser.add_argument('--attn-box-thr', type=float, default=0.75)
+    parser.add_argument('--plot-token', action='store_true')
+    parser.add_argument('--plot-token-compact', action='store_true')
+    parser.add_argument('--plot-final', action='store_true')
+    parser.add_argument('--alpha', type=float, default=0.5)
     args = parser.parse_args()
     main(args)
