@@ -1,5 +1,8 @@
+import cv2
 import numpy as np
 import torch
+
+from pycocotools import mask as mask_utils
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
@@ -118,3 +121,97 @@ def nms(masks, boxes, scores, iou=0.5):
 
     # return nms_masks, nms_boxes, scores[keep]
     return inv_indices[keep]
+
+def parse_response(response, spacy_model):
+    noun_phrases = list(spacy_model(response).noun_chunks)
+    phrase_start_char = [p.start_char for p in noun_phrases]
+    phrase_end_char = [p.end_char for p in noun_phrases]
+
+    return noun_phrases, phrase_start_char, phrase_end_char
+
+def decode_token_seq(seq, tokenizer):
+    token_start_char = []
+    token_end_char = []
+    prev_length = 0
+    curr_string = ''
+    for i in range(len(seq)):
+        curr_string = tokenizer.decode(seq[:i + 1], skip_special_tokens=True)
+        curr_length = len(curr_string)
+        token_start_char.append(prev_length)
+        token_end_char.append(curr_length)
+        prev_length = curr_length
+
+    return curr_string, token_start_char, token_end_char
+
+def associate_phrase_token(phrase_start_char, phrase_end_char,
+                           token_start_char, token_end_char,
+                           overlap=True):
+    phrase_token = []
+    for i in range(len(phrase_start_char)):
+        phrase_start = phrase_start_char[i]
+        phrase_end = phrase_end_char[i]
+        phrase_token_i = []
+        for j in range(len(token_start_char)):
+            token_start = token_start_char[j]
+            token_end = token_end_char[j]
+            if overlap:
+                if token_start < phrase_end and token_end > phrase_start:
+                    phrase_token_i.append(j)
+            else:
+                if token_start >= phrase_start and token_end <= phrase_end:
+                    phrase_token_i.append(j)
+        phrase_token.append(phrase_token_i)
+
+    return phrase_token
+
+def load_image_sam(image_path):
+    image = cv2.imread(image_path)
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    H, W = image.shape[:2]
+    S = max(W, H)
+    if W == H:
+        crop_coor = (0, 0, W, H)
+    elif W > H:
+        crop_coor = (0, (W - H) // 2, W, (W + H) // 2)
+    else:
+        crop_coor = ((H - W) // 2, 0, (H + W) // 2, H)
+
+    return image, H, W, S, crop_coor
+
+def upsample_attn(attn, S, crop_coor):
+    attn = torch.tensor(attn).unsqueeze(0).unsqueeze(0)
+    attn = torch.nn.functional.interpolate(attn, (S, S), mode='bicubic', align_corners=False)
+    attn = attn[0, 0, crop_coor[1]:crop_coor[3], crop_coor[0]:crop_coor[2]]
+    attn = attn.numpy()
+    return attn
+
+def binary_mask_to_rle(mask):
+    rle = mask_utils.encode(np.asfortranarray(mask))
+    rle['counts'] = rle['counts'].decode('utf-8')
+    return rle
+
+def rle_mask_to_binary(rle):
+    mask = mask_utils.decode(rle).astype(np.uint8)
+    return mask
+
+def longest_common_substring(s1, s2):
+    m, n = len(s1), len(s2)
+    dp = [[0] * (n + 1) for _ in range(m + 1)]
+    longest = 0
+    end_index_s1 = 0
+
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            if s1[i - 1] == s2[j - 1]:
+                dp[i][j] = dp[i - 1][j - 1] + 1
+                if dp[i][j] > longest:
+                    longest = dp[i][j]
+                    end_index_s1 = i - 1
+            else:
+                dp[i][j] = 0
+
+    start_index_s1 = end_index_s1 - longest + 1
+    substring = s1[start_index_s1:end_index_s1 + 1]
+    start_index_s2 = s2.index(substring)
+
+    return substring, start_index_s1, start_index_s2, longest
