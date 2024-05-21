@@ -124,17 +124,26 @@ def main(args):
                 output_scores=True,
                 return_dict_in_generate=True)
 
+            print(input_ids)
+
             save_sequences = output_ids["sequences"][0]
             save_scores = torch.cat(output_ids["scores"]).detach().cpu().numpy()
             save_attn = []
+            save_attn_text = []
             for i in range(len(output_ids["attentions"])):
                 save_attn_i = torch.cat(output_ids["attentions"][i])
                 save_attn_i = save_attn_i[:, :, -1, args.seq_start:args.seq_end].detach().cpu().numpy()
                 save_attn_i = save_attn_i.mean(axis=(0, 1)).reshape(args.attn_h, args.attn_w)
                 save_attn.append(save_attn_i)
 
+                save_attn_text_i = torch.cat(output_ids["attentions"][i])
+                save_attn_text_i = save_attn_text_i[:, :, -1, 618:619].detach().cpu().numpy()
+                save_attn_text_i = save_attn_text_i.mean()
+                save_attn_text.append(save_attn_text_i)
+
             save_attn = np.array(save_attn)
-            save_dict = {"sequences": save_sequences, "scores": save_scores, "attentions": save_attn}
+            save_attn_text = np.array(save_attn_text)
+            save_dict = {"sequences": save_sequences, "scores": save_scores, "attentions": save_attn, "attentions_text": save_attn_text}
             if args.vis_path is not None:
                 torch.save(save_dict, os.path.join(args.vis_path, file_name + "_save.pth"))
 
@@ -160,6 +169,9 @@ def main(args):
 
             attns = save_dict['attentions']
             attns = ((attns - attns.mean(axis=0)) / args.attn_temp).astype(np.float32)
+            attns_text = save_dict['attentions_text']
+            # attns_text = ((attns_text - attns_text.mean()) / args.attn_temp).astype(np.float32)
+            attns_text = (attns_text / args.attn_temp).astype(np.float32)
             tokens = tokenizer.convert_ids_to_tokens(save_dict['sequences'][1:])
             masks = []
             scores = []
@@ -180,6 +192,46 @@ def main(args):
                     score = 0.0
                 masks.append(mask)
                 scores.append(score)
+
+            if args.select_token:
+                spacy_model = spacy.load("en_core_web_lg")
+                response, token_start_char, token_end_char = decode_token_seq(save_dict['sequences'][1:], tokenizer)
+                noun_phrases, phrase_start_char, phrase_end_char = parse_response(response, spacy_model)
+                phrase_token = associate_phrase_token(phrase_start_char, phrase_end_char, token_start_char, token_end_char)
+                ref_phrase = spacy_model(inp[17:-1])
+                print(ref_phrase)
+                sims = []
+                for phrase in noun_phrases:
+                    sim = ref_phrase.similarity(phrase)
+                    sims.append(sim)
+                    print(phrase, sim)
+
+                # best_phrase = -1
+                # best_sim = -1.0
+                # for i in range(len(noun_phrases)):
+                #     if sims[i] > best_sim:
+                #         best_phrase = i
+                #         best_sim = sims[i]
+
+                # best_token = -1
+                # best_score = -1.0
+                # for i in phrase_token[best_phrase]:
+                #     if scores[i] > best_score:
+                #         best_token = i
+                #         best_score = scores[i]
+
+                best_phrase = -1
+                best_token = -1
+                best_score = -1.0
+                for i in range(len(noun_phrases)):
+                    for j in phrase_token[i]:
+                        score = sims[i] * scores[j]
+                        if score > best_score:
+                            best_phrase = i
+                            best_token = j
+                            best_score = score
+
+                print(f'Best token: "{response[token_start_char[best_token]:token_end_char[best_token]]}" from "{response[phrase_start_char[best_phrase]:phrase_end_char[best_phrase]]}"')
 
             if args.plot_token:
                 # visualize attention maps and segmentation
@@ -209,7 +261,7 @@ def main(args):
             if args.plot_token_compact:
                 # visualize attention maps
                 plots_W = 5
-                plots_H = (len(tokens) + plots_W - 2) // plots_W
+                plots_H = (len(tokens) + plots_W - 1) // plots_W
                 plt.figure(figsize=(plots_W * 2, plots_H * 2))
                 for i in range(len(tokens)):
                     token = tokens[i]
@@ -227,6 +279,7 @@ def main(args):
                 for i in range(len(tokens)):
                     token = tokens[i]
                     attn = attns[i]
+                    attn_text = attns_text[i]
                     mask = masks[i]
                     score = scores[i]
                     vis_mask = image_np.copy()
@@ -234,13 +287,14 @@ def main(args):
                     plt.subplot(plots_H, plots_W, i + 1)
                     plt.imshow(vis_mask)
                     plt.axis('off')
-                    plt.title(f'"{token}" {score:.2f}')
+                    # plt.title(f'"{token}" {score:.2f} {attn_text:.2f} {score * attn_text:.2f}')
+                    plt.title(f'"{token}" {score * attn_text:.2f}')
                 plt.tight_layout()
                 plt.savefig(os.path.join(args.vis_path, file_name + "_seg.png"))
                 plt.close()
 
             if args.plot_final:
-                spacy_model = spacy.load("en_core_web_md")
+                spacy_model = spacy.load("en_core_web_lg")
                 response, token_start_char, token_end_char = decode_token_seq(save_dict['sequences'][1:], tokenizer)
                 noun_phrases, phrase_start_char, phrase_end_char = parse_response(response, spacy_model)
                 phrase_token = associate_phrase_token(phrase_start_char, phrase_end_char, token_start_char, token_end_char)
@@ -302,6 +356,7 @@ if __name__ == "__main__":
     parser.add_argument('--plot-token', action='store_true')
     parser.add_argument('--plot-token-compact', action='store_true')
     parser.add_argument('--plot-final', action='store_true')
+    parser.add_argument('--select-token', action='store_true')
     parser.add_argument('--alpha', type=float, default=0.5)
     args = parser.parse_args()
     main(args)
