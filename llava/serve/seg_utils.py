@@ -63,6 +63,8 @@ def convert_point_SAM(mask):
 
 def mask_to_box(mask):
     x, y = np.where(mask)
+    if len(x) == 0:
+        return None
     box = [y.min(), x.min(), y.max() + 1, x.max() + 1]
     return np.array(box)
 
