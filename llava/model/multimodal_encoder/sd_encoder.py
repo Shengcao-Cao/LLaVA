@@ -453,7 +453,7 @@ class SDMSVisionTower(nn.Module):
 class SDCLIPFeaturizer:
     def __init__(self, sd_id='stabilityai/stable-diffusion-2-1', null_prompt='',
                  clip_model='openai/clip-vit-large-patch14-336',
-                 append_clip=False, pe=-1, device_map=None):
+                 append_clip=False, implicit_caption=False, pe=-1, device_map=None):
         unet = MyUNet2DConditionModel.from_pretrained(sd_id, subfolder="unet")
         text_encoder = CLIPTextModel.from_pretrained(sd_id, subfolder="text_encoder")
         vae = AutoencoderKL.from_pretrained(sd_id, subfolder="vae")
@@ -486,6 +486,7 @@ class SDCLIPFeaturizer:
         self.pipe = onestep_pipe
         # self.clip_projector and self.clip_pe is created in mm_projector later
         self.append_clip = append_clip
+        self.implicit_caption = implicit_caption
         self.add_pe = (pe > 0)
 
     def sd_to_clip_img(self, img_tensor):
@@ -530,6 +531,18 @@ class SDCLIPFeaturizer:
         proj_clip_features = proj_clip_features.repeat(ensemble_size, 1, 1)     # ensem * bs, h * w, c
         if self.add_pe:
             proj_clip_features = proj_clip_features + self.clip_pe
+        if self.implicit_caption:
+            prompt_embeds = proj_clip_features
+        else:
+            if prompt == self.null_prompt:
+                prompt_embeds = self.null_prompt_embeds
+            else:
+                prompt_embeds = self.pipe._encode_prompt(
+                    prompt=prompt,
+                    device='cuda',
+                    num_images_per_prompt=1,
+                    do_classifier_free_guidance=False)
+            prompt_embeds = prompt_embeds.repeat(ensemble_size * img_tensor.shape[0], 1, 1)
         # produce SD features
         bs = img_tensor.shape[0]
         img_tensor = img_tensor.repeat(ensemble_size, 1, 1, 1).cuda()           # ensem * bs, c, h, w
@@ -537,7 +550,7 @@ class SDCLIPFeaturizer:
             img_tensor=img_tensor,
             t=t,
             up_ft_indices=up_ft_indices,
-            prompt_embeds=proj_clip_features)
+            prompt_embeds=prompt_embeds)
         unet_ft = {}
         for up_ft_index in up_ft_indices:
             unet_ft[up_ft_index] = unet_ft_all['up_ft'][up_ft_index]    # ensem * bs, c, h, w
@@ -577,6 +590,7 @@ class SDMSCLIPVisionTower(nn.Module):
                                                   mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         self.vision_tower = SDCLIPFeaturizer(self.vision_tower_name, clip_model=self.args.mm_vision_clip,
                                              append_clip=self.args.mm_vision_append_clip,
+                                             implicit_caption=True,
                                              pe=self.args.mm_vision_pe)
         self.is_loaded = True
 

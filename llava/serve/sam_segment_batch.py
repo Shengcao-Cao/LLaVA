@@ -216,13 +216,14 @@ if __name__ == '__main__':
     parser.add_argument('--nms-thr', type=float, default=-1.0)
     parser.add_argument('--cluster-method', type=str, default='spacy_attn')
     parser.add_argument('--filter-score', action='store_true')
+    parser.add_argument('--filter-sim', action='store_true')
     args = parser.parse_args()
 
     sam = sam_model_registry[args.sam_model](checkpoint=args.sam_ckpt).to(device=args.device)
     predictor = SamPredictor(sam)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_base, use_fast=False)
-    spacy_model = spacy.load('en_core_web_sm')
+    spacy_model = spacy.load('en_core_web_lg')
 
     image_files = os.listdir(args.image_folder)
     image_files = sorted(image_files)
@@ -378,6 +379,19 @@ if __name__ == '__main__':
             save_token_locs = filtered_token_locs
             save_scores = filtered_scores
             save_ious = filtered_ious
+
+        if args.filter_sim:
+            before_N = len(save_phrases)
+            masks = np.array([mask_utils.decode(x) for x in save_masks])
+            boxes = np.array([mask_to_box(x) for x in masks])
+            scores = np.array(save_scores)
+            phrases = save_phrases
+            indices = nms_phrase(masks, boxes, scores, phrases, spacy_model)
+            save_phrases = [save_phrases[i] for i in indices]
+            save_masks = [save_masks[i] for i in indices]
+            save_token_locs = [save_token_locs[i] for i in indices]
+            after_N = len(save_phrases)
+            print(f'Filtering: {before_N} -> {after_N}', flush=True)
 
         if args.visualize:
             vis_all = [vis_all[i] for i in indices]

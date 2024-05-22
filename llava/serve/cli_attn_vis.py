@@ -288,7 +288,8 @@ def main(args):
                     plt.imshow(vis_mask)
                     plt.axis('off')
                     # plt.title(f'"{token}" {score:.2f} {attn_text:.2f} {score * attn_text:.2f}')
-                    plt.title(f'"{token}" {score * attn_text:.2f}')
+                    # plt.title(f'"{token}" {score * attn_text:.2f}')
+                    plt.title(f'"{token}" {score:.2f}')
                 plt.tight_layout()
                 plt.savefig(os.path.join(args.vis_path, file_name + "_seg.png"))
                 plt.close()
@@ -298,11 +299,15 @@ def main(args):
                 response, token_start_char, token_end_char = decode_token_seq(save_dict['sequences'][1:], tokenizer)
                 noun_phrases, phrase_start_char, phrase_end_char = parse_response(response, spacy_model)
                 phrase_token = associate_phrase_token(phrase_start_char, phrase_end_char, token_start_char, token_end_char)
-                phrase_token = [phrase_token[4], phrase_token[7], phrase_token[12]]
+                if args.select_phrase is not None:
+                    phrase_indices = args.select_phrase
+                else:
+                    phrase_indices = range(len(phrase_token))
+                print(phrase_indices)
                 vis_mask = image_np.copy()
                 colors = []
-                for i in range(len(phrase_token)):
-                    best_tokens = phrase_token[i]
+                for i in range(len(phrase_indices)):
+                    best_tokens = phrase_token[phrase_indices[i]]
                     best_mask = np.zeros((H, W), dtype=np.uint8)
                     best_mask_score = 0.0
                     best_token_idx = -1
@@ -314,9 +319,10 @@ def main(args):
                             best_mask_score = score
                             best_token_idx = token_idx
 
-                    hue = int(180 / len(phrase_token) * i)
-                    hsv_color = np.uint8([[[hue, 255, 255]]])
+                    hue = int(180 / len(phrase_indices) * i)
+                    hsv_color = np.uint8([[[hue, 255, 150]]])
                     color = cv2.cvtColor(hsv_color, cv2.COLOR_HSV2RGB)
+                    print(color)
                     colors.append(color)
 
                     kernel = np.ones((3, 3), np.uint8)
@@ -329,8 +335,8 @@ def main(args):
                 vis_mask = cv2.cvtColor(vis_mask, cv2.COLOR_RGB2BGR)
                 cv2.imwrite(os.path.join(args.vis_path, file_name + "_final.jpg"), vis_mask)
 
-                for i in range(len(phrase_token)):
-                    print(f"Phrase {i}:", noun_phrases[i].text, colors[i])
+                for i in range(len(phrase_indices)):
+                    print(f"Phrase {i}:", noun_phrases[phrase_indices[i]].text, colors[i])
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -358,5 +364,6 @@ if __name__ == "__main__":
     parser.add_argument('--plot-final', action='store_true')
     parser.add_argument('--select-token', action='store_true')
     parser.add_argument('--alpha', type=float, default=0.5)
+    parser.add_argument('--select-phrase', type=int, nargs='+', default=None)
     args = parser.parse_args()
     main(args)
