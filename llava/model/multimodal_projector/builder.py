@@ -219,7 +219,7 @@ class SDMSLNSSBlock(nn.Module):
 
 class SDMSCLIPLNSSBlock(nn.Module):
     def __init__(self, in_channels, out_channels, select_layer=1, scale=[32, 16, 8, 8], num_layers=4,
-                 clip_proj_in=1024, clip_proj_out=768, append_clip=False, pe=-1):
+                 clip_proj_in=1024, clip_proj_out=768, append_clip=False, concat_clip=False, pe=-1):
         super().__init__()
         self.clip_projector = nn.Sequential(
             nn.Linear(clip_proj_in, clip_proj_out),
@@ -227,49 +227,43 @@ class SDMSCLIPLNSSBlock(nn.Module):
             nn.Linear(clip_proj_out, clip_proj_out),
         )
         self.append_clip = append_clip
+        self.concat_clip = concat_clip
         if append_clip:
             in_channels = in_channels + [clip_proj_in]
             scale = scale + [16]
         self.sd_norm_layer = nn.LayerNorm(in_channels[select_layer])
-        i = select_layer
-        # hard-coded for now, expecting output scale to be H/16 x W/16
-        if scale[i] == 32:
-            self.sd_proj_layer = nn.Sequential(
-                nn.ConvTranspose2d(in_channels[i], out_channels // 4, kernel_size=2, stride=2),
-                nn.GELU(),
-            )
-        elif scale[i] == 16:
-            self.sd_proj_layer = nn.Sequential(
-                nn.Conv2d(in_channels[i], out_channels // 4, kernel_size=1, stride=1),
-                nn.GELU(),
-            )
-        elif scale[i] == 8:
-            self.sd_proj_layer = nn.Sequential(
-                nn.Conv2d(in_channels[i], out_channels // 4, kernel_size=2, stride=2),
-                nn.GELU(),
-            )
-        else:
-            raise ValueError(f'Unknown scale: {scale[i]}')
+        self.clip_norm_layer = nn.LayerNorm(clip_proj_in)
+        self.select_layer = select_layer
+        linear_in = in_channels[select_layer]
+        if concat_clip:
+            linear_in += clip_proj_in
         self.linear = nn.Sequential(
-            nn.Linear(clip_proj_in + out_channels // 4, out_channels),
+            nn.Linear(linear_in, out_channels),
             nn.GELU(),
             nn.Linear(out_channels, out_channels),
         )
-        self.select_layer = select_layer
         if pe > 0:
             self.add_pe = True
-            self.clip_pe = nn.Parameter(torch.randn(pe, clip_proj_out))
-            self.vt_pe = nn.Parameter(torch.randn(pe, out_channels))
+            self.clip_pe = nn.Parameter(torch.randn(pe, clip_proj_out) * 0.02)
+            self.vt_pe = nn.Parameter(torch.randn(pe, out_channels) * 0.02)
         else:
             self.add_pe = False
 
     def forward(self, x):
+        # SD feature
         y = x[self.select_layer]
         y = y.permute(0, 2, 3, 1)
         y = self.sd_norm_layer(y)
         y = y.permute(0, 3, 1, 2)
-        y = self.sd_proj_layer(y)
-        y = torch.cat([y, x[-1]], dim=1)
+
+        if self.concat_clip:
+            # CLIP feature
+            z = x[-1]
+            z = z.permute(0, 2, 3, 1)
+            z = self.clip_norm_layer(z)
+            z = z.permute(0, 3, 1, 2)
+            y = torch.cat([y, z], dim=1)
+
         b, c, h, w = y.shape
         y = y.view(b, c, h * w).permute(0, 2, 1)
         y = self.linear(y)
@@ -307,6 +301,7 @@ def build_vision_projector(config, delay_load=False, **kwargs):
                                  clip_proj_in=config.mm_vision_clip_proj_in,
                                  clip_proj_out=config.mm_vision_clip_proj_out,
                                  append_clip=config.mm_vision_append_clip,
+                                 concat_clip=config.mm_vision_concat_clip,
                                  pe=config.mm_vision_pe,
                                  **kwargs)
 

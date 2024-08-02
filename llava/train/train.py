@@ -73,6 +73,7 @@ class ModelArguments:
     mm_vision_clip_proj_in: int = field(default=1024)
     mm_vision_clip_proj_out: int = field(default=768)
     mm_vision_append_clip: bool = field(default=False)
+    mm_vision_concat_clip: bool = field(default=False)
     mm_vision_pe: int = field(default=-1)
 
 
@@ -962,6 +963,7 @@ def train(attn_implementation=None):
         model.config.mm_vision_clip_proj_in = model_args.mm_vision_clip_proj_in
         model.config.mm_vision_clip_proj_out = model_args.mm_vision_clip_proj_out
         model.config.mm_vision_append_clip = model_args.mm_vision_append_clip
+        model.config.mm_vision_concat_clip = model_args.mm_vision_concat_clip
         model.config.mm_vision_pe = model_args.mm_vision_pe
 
     if training_args.bits in [4, 8]:

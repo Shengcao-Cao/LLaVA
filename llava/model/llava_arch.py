@@ -79,6 +79,7 @@ class LlavaMetaModel:
         self.config.mm_vision_clip_proj_in = getattr(model_args, 'mm_vision_clip_proj_in', None)
         self.config.mm_vision_clip_proj_out = getattr(model_args, 'mm_vision_clip_proj_out', None)
         self.config.mm_vision_append_clip = getattr(model_args, 'mm_vision_append_clip', None)
+        self.config.mm_vision_concat_clip = getattr(model_args, 'mm_vision_concat_clip', None)
         self.config.mm_vision_pe = getattr(model_args, 'mm_vision_pe', None)
 
         if getattr(self, 'mm_projector', None) is None:
